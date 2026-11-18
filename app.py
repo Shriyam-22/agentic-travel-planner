@@ -40,6 +40,14 @@ except DatabaseError as exc:
     st.error(f"Could not load the travel datasets: {exc}")
     st.stop()
 
+def _secret(name: str) -> str:
+    """Read a key from Streamlit secrets (used on Streamlit Community Cloud), if any."""
+    try:
+        return str(st.secrets.get(name, ""))
+    except Exception:  # no secrets file locally
+        return ""
+
+
 PROVIDER_LABELS = {"groq": "Groq (free tier)", "openai": "OpenAI", "google_genai": "Google Gemini"}
 FLIGHT_PREFS = {"Best value (fare + time)": "best_value", "Cheapest": "cheapest", "Fastest": "fastest"}
 
@@ -61,8 +69,17 @@ with st.sidebar:
                                 if config.LLM_PROVIDER in PROVIDER_LABELS else 0)
         model = st.text_input("Model", value=config.DEFAULT_MODELS[provider])
         env_var = config.API_KEY_ENV_VARS[provider]
-        api_key = st.text_input(f"API key ({env_var})", value=os.getenv(env_var, ""), type="password")
-        if not api_key:
+        server_key = bool(os.getenv(env_var) or _secret(env_var))
+        # Never pre-fill the box with the server's key: widget values are sent to the browser.
+        api_key = st.text_input(
+            f"API key ({env_var})",
+            type="password",
+            placeholder="Using the key configured on the server" if server_key else "Paste your key",
+            help="Optional when the app already has a key configured.",
+        )
+        if not api_key and _secret(env_var):
+            os.environ.setdefault(env_var, _secret(env_var))
+        if not api_key and not server_key:
             st.info(f"Add `{env_var}` to `.env` or paste it above. Groq keys are free at console.groq.com.")
     st.divider()
     st.caption("**Agent tools**")

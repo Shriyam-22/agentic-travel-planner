@@ -107,6 +107,16 @@ streamlit run app.py
 - **Explore the data:** filterable tables of flights, hotels and places.
 - The results show metrics, flights, hotel, a day-by-day plan with weather, a budget chart, reasoning, the **agent trace** (every tool call with its arguments and output), the JSON, and downloads.
 
+### Deploy on Streamlit Community Cloud
+
+1. On [share.streamlit.io](https://share.streamlit.io) choose **Create app → Deploy a public app from GitHub**.
+2. Repository `Shriyam-22/agentic-travel-planner`, branch `main`, main file `app.py`.
+3. **Advanced settings → Secrets**, paste:
+   ```toml
+   GROQ_API_KEY = "your-key-here"
+   ```
+4. Deploy. The key stays on the server and is never shown in the page.
+
 ### CLI
 
 ```bash
