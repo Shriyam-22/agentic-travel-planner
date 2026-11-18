@@ -42,17 +42,42 @@ def _unknown_city(name: str) -> str:
     return _to_json({"error": f"'{name}' is not in the dataset.", "supported_cities": list_cities()})
 
 
-def _slim_flight(flight: dict) -> dict:
-    """Drop the raw 2025 sample timestamps so the LLM only sees schedule fields."""
-    return {k: v for k, v in flight.items() if k not in {"departure_time", "arrival_time"}}
+def _leg_summary(leg: dict) -> str:
+    """One compact line per flight leg, e.g. 'FL0024 SpiceJet Mumbai->Goa 14:38-18:38 Rs3304'."""
+    return (f"{leg['flight_id']} {leg['airline']} {leg['origin']}->{leg['destination']} "
+            f"{leg['departs_at']}-{leg['arrives_at']} Rs{leg['price']}")
 
 
-def _slim_option(option: dict | None) -> dict | None:
-    if option is None:
-        return None
+def _compact_option(option: dict) -> dict:
+    """Small, LLM-friendly view of a direct flight or connecting itinerary.
+
+    Keeps token usage low (free LLM tiers cap tokens per minute) and drops the
+    raw 2025 sample timestamps so the model only sees schedule fields.
+    """
     if option.get("type") == "connecting":
-        return {**option, "legs": [_slim_flight(leg) for leg in option["legs"]]}
-    return {"type": "direct", **_slim_flight(option)}
+        return {
+            "flight_ids": option["flight_ids"],
+            "airlines": option["airlines"],
+            "stops": option["stops"],
+            "via": option["via"],
+            "departs_at": option["departs_at"],
+            "arrives_at": option["arrives_at"],
+            "days_in_transit": option["days_in_transit"],
+            "duration": option["total_duration"],
+            "price": option["total_price"],
+            "legs": [_leg_summary(leg) for leg in option["legs"]],
+        }
+    return {
+        "flight_ids": [option["flight_id"]],
+        "airlines": [option["airline"]],
+        "stops": 0,
+        "via": [],
+        "departs_at": option["departs_at"],
+        "arrives_at": option["arrives_at"],
+        "days_in_transit": int(option["arrives_next_day"]),
+        "duration": option["duration"],
+        "price": option["price"],
+    }
 
 
 @tool
@@ -78,8 +103,9 @@ def search_flights(
 ) -> str:
     """Search flights between two cities.
 
-    Returns direct flights plus the cheapest, fastest and best_value options
-    (best_value = fare + ₹200 per hour of journey, which avoids very long cheap connections). When there is no
+    Returns up to 4 numbered options (direct flights, or connecting itineraries when
+    there is no direct flight) and which option number is cheapest, fastest and
+    best_value (best_value = fare + ₹200 per hour of journey). Prices are per person in INR. When there is no
     direct flight, returns connecting itineraries (up to 3 stops). Flights are daily
     schedules: use 'departs_at'/'arrives_at' clock times on the traveller's date.
 
@@ -101,14 +127,27 @@ def search_flights(
     except DatabaseError as exc:
         return _to_json({"error": str(exc)})
 
+    candidates = result["direct_flights"] or result["connecting_options"]
+    options = [{"option": i + 1, **_compact_option(o)} for i, o in enumerate(candidates[:4])]
+
+    def option_number(pick: dict | None) -> int | None:
+        if pick is None:
+            return None
+        for i, o in enumerate(candidates[:4]):
+            if o is pick or o == pick:
+                return i + 1
+        options.append({"option": len(options) + 1, **_compact_option(pick)})
+        return len(options)
+
+    picks = {key: option_number(result[key]) for key in ("cheapest", "fastest", "best_value")}
     output = {
         "origin": src,
         "destination": dst,
-        "direct_flights": [_slim_option(f) for f in result["direct_flights"]],
-        "connecting_options": [_slim_option(c) for c in result["connecting_options"]],
-        "cheapest": _slim_option(result["cheapest"]),
-        "fastest": _slim_option(result["fastest"]),
-        "best_value": _slim_option(result["best_value"]),
+        "route_type": "direct" if result["direct_flights"] else ("connecting" if candidates else "none"),
+        "options": options,
+        "cheapest_option": picks["cheapest"],
+        "fastest_option": picks["fastest"],
+        "best_value_option": picks["best_value"],
         "note": result["note"],
     }
     fastest = result["fastest"]

@@ -131,10 +131,21 @@ def test_tool_unknown_city_message():
     assert "error" in out and "Goa" in out["supported_cities"]
 
 
-def test_tool_flights_hide_sample_dates():
+def test_tool_flights_compact_output():
     out = json.loads(tools.search_flights.invoke({"origin": "Delhi", "destination": "Kolkata"}))
-    assert "departure_time" not in out["direct_flights"][0]
-    assert out["cheapest"]["departs_at"] == "05:34"
+    assert out["route_type"] == "direct"
+    assert "departure_time" not in out["options"][0]
+    cheapest = out["options"][out["cheapest_option"] - 1]
+    assert cheapest["departs_at"] == "05:34" and cheapest["price"] == 3779
+
+
+def test_tool_flights_connecting_best_value():
+    raw = tools.search_flights.invoke({"origin": "Mumbai", "destination": "Jaipur"})
+    out = json.loads(raw)
+    assert out["route_type"] == "connecting" and len(out["options"]) <= 5
+    best = out["options"][out["best_value_option"] - 1]
+    assert best["via"] == ["Goa"] and best["duration"] == "8h 00m"
+    assert len(raw) < 4000, "flight tool output must stay small for free-tier token limits"
 
 
 # ---- planner ---------------------------------------------------------------

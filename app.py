@@ -166,17 +166,21 @@ def render_plan(plan: TripPlan, steps: list | None = None, engine_label: str = "
 
 
 def run_with_agent(query: str) -> None:
+    error = None
     with st.status("🤖 Agent is planning your trip…", expanded=True) as status:
         st.write("Reasoning about your request and calling tools…")
         try:
             result = run_agent(query, provider=provider, model=model, api_key=api_key or None)
         except AgentError as exc:
-            status.update(label="Planning failed", state="error")
-            st.error(f"{exc}\n\nTip: switch to **Offline rule-based** in the sidebar to try without an LLM.")
-            return
-        for step in result.steps:
-            st.write(f"🔧 `{step.tool}` {json.dumps(step.arguments, ensure_ascii=False)}")
-        status.update(label=f"Done — {len(result.steps)} tool calls", state="complete", expanded=False)
+            error = exc
+            status.update(label="Planning failed — see the error below", state="error", expanded=False)
+        else:
+            for step in result.steps:
+                st.write(f"🔧 `{step.tool}` {json.dumps(step.arguments, ensure_ascii=False)}")
+            status.update(label=f"Done — {len(result.steps)} tool calls", state="complete", expanded=False)
+    if error is not None:
+        st.error(f"{error}\n\nTip: switch to **Offline rule-based** in the sidebar to try without an LLM.")
+        return
     st.session_state["result"] = (result.plan, result.steps, f"LangChain agent · {provider}:{model}")
 
 

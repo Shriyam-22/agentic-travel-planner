@@ -77,15 +77,15 @@ HTTP_TIMEOUT_SECONDS = 10
 # --------------------------------------------------------------------------- #
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")  # groq | openai | google_genai
 DEFAULT_MODELS: dict[str, str] = {
-    "groq": "llama-3.3-70b-versatile",
+    "groq": "openai/gpt-oss-120b",  # llama-3.3-70b-versatile was retired Aug 2026
     "openai": "gpt-4o-mini",
-    "google_genai": "gemini-2.0-flash",
+    "google_genai": "gemini-2.5-flash",
 }
 API_KEY_ENV_VARS: dict[str, str] = {
     "groq": "GROQ_API_KEY",
     "openai": "OPENAI_API_KEY",
     "google_genai": "GOOGLE_API_KEY",
 }
-LLM_MODEL = os.getenv("LLM_MODEL", DEFAULT_MODELS.get(LLM_PROVIDER, "llama-3.3-70b-versatile"))
+LLM_MODEL = os.getenv("LLM_MODEL", DEFAULT_MODELS.get(LLM_PROVIDER, "openai/gpt-oss-120b"))
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 AGENT_RECURSION_LIMIT = int(os.getenv("AGENT_RECURSION_LIMIT", "30"))

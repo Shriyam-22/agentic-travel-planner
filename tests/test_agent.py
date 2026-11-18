@@ -61,7 +61,7 @@ def test_agent_runs_tools_and_returns_structured_plan(monkeypatch):
     assert tools_used == ["search_flights", "search_flights", "search_hotels",
                           "search_places", "get_weather", "estimate_budget"]
     flights = json.loads(result.steps[0].output)
-    assert flights["cheapest"]["flight_id"] == "FL0001"
+    assert flights["options"][flights["cheapest_option"] - 1]["flight_ids"] == ["FL0001"]
     hotels = json.loads(result.steps[2].output)
     assert all(h["stars"] >= 4 for h in hotels["hotels"])
 

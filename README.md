@@ -35,7 +35,7 @@ Travel platforms (MakeMyTrip, Booking.com, Cleartrip, Ixigo) are moving to **con
             └──────────────────────────────────────────┬──────────────────────────────────┘
                                                        ▼
                          LangChain agent  (create_agent, tool calling, ReAct loop)
-                         LLM: Groq Llama-3.3 / OpenAI / Gemini      response_format = TripPlan
+                         LLM: Groq gpt-oss-120b / OpenAI / Gemini      response_format = TripPlan
                                                        │  decides which tools to call
      ┌──────────────┬──────────────┬───────────────────┼──────────────┬────────────────┐
      ▼              ▼              ▼                   ▼              ▼                ▼
