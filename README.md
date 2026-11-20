@@ -1,5 +1,9 @@
 # ✈️ Agentic AI Travel Planner (LangChain)
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://agentic-travel-planner-ne7j5dmse87tvy7hfaag87.streamlit.app/)
+
+**▶️ Live demo:** [agentic-travel-planner-ne7j5dmse87tvy7hfaag87.streamlit.app](https://agentic-travel-planner-ne7j5dmse87tvy7hfaag87.streamlit.app/)
+
 An AI travel agent that plans complete 3–7 day trips in India: flights, hotel, day-by-day itinerary, weather and a budget. It explains every choice it makes.
 
 A **LangChain tool-calling agent** reads the traveller's request and decides which tools to call and in what order. It searches the flight, hotel and attraction datasets, checks live weather from **Open-Meteo**, estimates cost, and returns a **validated JSON itinerary** together with a human-readable version, through a **Streamlit** app or a **CLI**.
@@ -97,6 +101,8 @@ cp .env.example .env        # then add your key
 **Get a free LLM key:** [Groq](https://console.groq.com/keys) (default, free tier) · or OpenAI / Google Gemini. Set `LLM_PROVIDER` and the matching key in `.env`. You can also paste the key into the Streamlit sidebar.
 
 ### Run the app
+
+Use the hosted version at **[the live demo](https://agentic-travel-planner-ne7j5dmse87tvy7hfaag87.streamlit.app/)**, or run it locally:
 
 ```bash
 streamlit run app.py
