@@ -137,7 +137,7 @@ python cli.py --from Hyderabad --to Delhi --start 2026-12-01 --days 3 --offline 
 pytest -q
 ```
 
-There are 22 tests. They cover the database, flight routing, hotel/place filters, the budget maths, weather (forecast / historical / failure, with the network mocked), tool error handling, the offline planner, and the **full LangChain agent loop**, driven by a scripted fake LLM so it runs without an API key.
+There are 25 tests. They cover the database, flight routing, hotel/place filters, the budget maths, weather (forecast / historical / failure, with the network mocked), tool error handling, the offline planner, and the **full LangChain agent loop**, driven by a scripted fake LLM so it runs without an API key.
 
 ## 6. Key design decisions
 
@@ -147,6 +147,7 @@ There are 22 tests. They cover the database, flight routing, hotel/place filters
 - **Best-value hotel.** Hotels are ranked by stars per ₹1,000 a night. Luxury trips rank by stars and budget trips by price.
 - **Weather.** Dates within 16 days use the live forecast. Dates further out use the same dates last year from the Open-Meteo archive, labelled "typical". If the API fails, the plan still completes and the failure is flagged as a warning.
 - **Budget.** Flights are per person and round trip. The hotel is charged per room (2 travellers/room) for each night. Food and local travel cost ₹1,200 / ₹2,000 / ₹4,000 per person per day for the budget / standard / luxury styles (set in `config.py`).
+- **Reliable final answer.** Open models occasionally garble the long final JSON. The agent retries the model automatically; if it still fails, it keeps all the data it gathered and writes the plan in one JSON-schema structured-output call instead of starting over.
 - **Robustness.** Tools validate city names (with aliases like Bengaluru → Bangalore) and always return JSON errors instead of raising. Database and API errors are wrapped in typed exceptions, and the agent has a recursion limit.
 
 ## 7. Sample output

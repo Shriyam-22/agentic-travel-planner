@@ -11,14 +11,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import date
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelRetryMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from travel_agent import config
 from travel_agent.schemas import TripPlan
@@ -62,6 +65,23 @@ Work step by step:
    over-budget, assumptions, and that the dataset is a sample (verify before booking).
 
 Rules: never invent flights, hotels, places, prices or weather. Use INR. Dates are YYYY-MM-DD.
+
+Final answer: call the `TripPlan` tool exactly once with the complete plan (no other tool name, no
+plain-text JSON). Keep it compact: at most 4 activities per day, notes under 15 words, reasoning and
+warnings as short sentences, plain ASCII punctuation.
+"""
+
+FINALIZE_PROMPT = """You are an expert Indian travel planner. Today is {today}.
+The research for this trip is already done: the user's request and every tool result are below.
+Using ONLY these results (never invent flights, hotels, places, prices or weather), write the final
+itinerary following these rules:
+- Respect the user's flight preference (best_value by default). Days before the outbound flight lands
+  are "In transit". On arrival day only light activities after landing. On the last day one morning
+  activity only if the return flight leaves after 12:00.
+- 2-3 places per full day, best rated / preferred types first, never repeat a place; free-time items
+  have place_id null. Add the weather to every day.
+- Use the estimate_budget result for the budget. Explain choices in `reasoning`; list caveats in `warnings`.
+- Keep it compact: at most 4 activities per day, notes under 15 words. Use INR and YYYY-MM-DD dates.
 """
 
 
@@ -113,13 +133,27 @@ def build_llm(
         raise AgentError(f"Could not initialise {provider}:{model} — {exc}") from exc
 
 
-def build_agent(llm: BaseChatModel):
-    """Assemble the tool-calling agent with structured TripPlan output."""
+def _is_retryable(exc: Exception) -> bool:
+    """Retry malformed tool calls and transient server errors, not auth or quota problems."""
+    text = str(exc)
+    return any(marker in text for marker in ("tool_use_failed", "Failed to parse tool call",
+                                              "Error code: 500", "Error code: 502", "Error code: 503"))
+
+
+def build_agent(llm: BaseChatModel, checkpointer=None):
+    """Assemble the tool-calling agent with structured TripPlan output.
+
+    ``ModelRetryMiddleware`` re-asks the model when it emits a malformed tool call
+    (some open models occasionally garble long JSON arguments).
+    """
     return create_agent(
         model=llm,
         tools=ALL_TOOLS,
         system_prompt=SYSTEM_PROMPT.format(today=date.today().isoformat()),
         response_format=ToolStrategy(TripPlan),
+        middleware=[ModelRetryMiddleware(max_retries=2, retry_on=_is_retryable, on_failure="error",
+                                         initial_delay=1.0)],
+        checkpointer=checkpointer,
     )
 
 
@@ -148,6 +182,56 @@ def _fallback_parse(messages: list) -> TripPlan | None:
     return None
 
 
+def _friendly_error(exc: Exception) -> str:
+    """Turn provider errors into messages a traveller can act on."""
+    text = str(exc)
+    if "rate_limit" in text or "Error code: 429" in text or "Request too large" in text or "Error code: 413" in text:
+        return ("The AI provider's free-tier limit was reached. Wait a minute and try again, "
+                "or shorten the trip / pick a route with direct flights.")
+    if "model_not_found" in text or "Error code: 404" in text:
+        return ("The selected model is not available for your API key. "
+                f"Pick another model in the sidebar. ({text[:160]})")
+    if "invalid_api_key" in text or "Error code: 401" in text:
+        return "The API key was rejected. Check the key in .env or the app's Secrets."
+    if "tool_use_failed" in text or "Failed to parse tool call" in text:
+        return "The AI model returned a malformed answer several times. Please try again."
+    return f"The agent failed while planning: {text[:300]}"
+
+
+def _research_digest(query: str, messages: list) -> str:
+    """The user request plus every tool call and its result, as plain text."""
+    outputs = {m.tool_call_id: m.content for m in messages if isinstance(m, ToolMessage)}
+    lines = [f"USER REQUEST: {query}", "", "TOOL RESULTS:"]
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls or []:
+                if call["name"] == "TripPlan" or call["id"] not in outputs:
+                    continue
+                lines.append(f"- {call['name']}({json.dumps(call.get('args', {}), ensure_ascii=False)})")
+                lines.append(f"  -> {outputs[call['id']]}")
+    return "\n".join(lines)
+
+
+def finalize_plan(llm: BaseChatModel, query: str, messages: list) -> TripPlan:
+    """Write the TripPlan from already-gathered tool results in one structured-output call.
+
+    Used as a fallback when the agent's own final tool call fails. JSON-schema mode
+    constrains the output, which is far more reliable for long structured answers.
+    """
+    prompt = [
+        SystemMessage(FINALIZE_PROMPT.format(today=date.today().isoformat())),
+        HumanMessage(_research_digest(query, messages)),
+    ]
+    try:
+        structured = llm.with_structured_output(TripPlan, method="json_schema")
+    except (TypeError, ValueError, NotImplementedError):
+        structured = llm.with_structured_output(TripPlan)
+    plan = structured.invoke(prompt)
+    if isinstance(plan, dict):
+        plan = TripPlan.model_validate(plan)
+    return plan
+
+
 def run_agent(query: str, llm: BaseChatModel | None = None, **llm_kwargs) -> AgentResult:
     """Plan a trip from a natural-language request.
 
@@ -155,26 +239,47 @@ def run_agent(query: str, llm: BaseChatModel | None = None, **llm_kwargs) -> Age
         query: e.g. "4 days in Jaipur from Mumbai starting 2026-12-12, 2 people, love forts".
         llm: A ready chat model; if omitted one is built from ``llm_kwargs`` / environment.
 
+    If the agent gathers its data but fails to return the final structured plan,
+    :func:`finalize_plan` writes it from the tool results instead of starting over.
+
     Raises:
         AgentError: if the model fails or does not return a valid itinerary.
     """
     llm = llm or build_llm(**llm_kwargs)
-    agent = build_agent(llm)
+    agent = build_agent(llm, checkpointer=InMemorySaver())
+    run_config = {"recursion_limit": config.AGENT_RECURSION_LIMIT,
+                  "configurable": {"thread_id": str(uuid.uuid4())}}
+    model_name = str(getattr(llm, "model_name", None) or getattr(llm, "model", "") or "")
+
     try:
-        state = agent.invoke(
-            {"messages": [{"role": "user", "content": query}]},
-            config={"recursion_limit": config.AGENT_RECURSION_LIMIT},
-        )
+        state = agent.invoke({"messages": [{"role": "user", "content": query}]}, config=run_config)
     except Exception as exc:
-        logger.exception("Agent run failed")
-        raise AgentError(f"The agent failed while planning: {exc}") from exc
+        logger.warning("Agent run failed (%s); trying to finalise from gathered results", exc)
+        try:
+            messages = agent.get_state(run_config).values.get("messages", [])
+        except Exception:  # noqa: BLE001 - state may be unavailable
+            messages = []
+        steps = _extract_steps(messages)
+        if not steps:
+            raise AgentError(_friendly_error(exc)) from exc
+        try:
+            plan = finalize_plan(llm, query, messages)
+        except Exception as final_exc:
+            logger.exception("Fallback finalisation failed")
+            raise AgentError(_friendly_error(final_exc)) from exc
+        return AgentResult(plan=plan, steps=steps, model=model_name)
 
     messages = state.get("messages", [])
     plan = state.get("structured_response") or _fallback_parse(messages)
     if plan is None:
-        raise AgentError("The agent finished without returning a structured itinerary.")
-    model_name = getattr(llm, "model_name", None) or getattr(llm, "model", "") or ""
-    return AgentResult(plan=plan, steps=_extract_steps(messages), model=str(model_name))
+        steps = _extract_steps(messages)
+        if not steps:
+            raise AgentError("The agent finished without returning a structured itinerary.")
+        try:
+            plan = finalize_plan(llm, query, messages)
+        except Exception as exc:
+            raise AgentError(_friendly_error(exc)) from exc
+    return AgentResult(plan=plan, steps=_extract_steps(messages), model=model_name)
 
 
 def build_query(

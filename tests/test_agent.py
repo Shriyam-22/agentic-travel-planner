@@ -11,8 +11,9 @@ import json
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
 
-from travel_agent.agent import build_query, run_agent
+from travel_agent.agent import AgentError, build_query, run_agent
 from travel_agent.planner import plan_trip
 
 
@@ -71,3 +72,55 @@ def test_build_query_includes_preferences():
                     interests=["beach"], amenities=["pool"], min_hotel_stars=4)
     assert "4-day trip from Delhi to Goa" in q
     assert "₹50,000" in q and "beach" in q and "pool" in q and "4 stars" in q
+
+
+class FailingFinalModel(ScriptedToolModel):
+    """Gathers data with tools, then fails like Groq's 'tool_use_failed' on the final answer."""
+
+    final_plan: dict = {}
+    fail_always: bool = False
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        if self.fail_always or sum(1 for m in messages if m.type == "tool") >= 2:
+            raise RuntimeError("Error code: 400 - {'error': {'code': 'tool_use_failed', "
+                               "'message': 'Failed to parse tool call arguments as JSON'}}")
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    def with_structured_output(self, schema, **kwargs):
+        return RunnableLambda(lambda _prompt: schema.model_validate(self.final_plan))
+
+
+def test_agent_falls_back_to_finalize_when_final_tool_call_breaks(monkeypatch):
+    monkeypatch.setattr("travel_agent.agent.ModelRetryMiddleware.__init__",
+                        _no_wait_retry_init, raising=True)
+    final_plan = plan_trip("Delhi", "Kolkata", "2026-12-01", 3).model_dump()
+    script = iter([
+        AIMessage(content="", tool_calls=[
+            _call("search_flights", {"origin": "Delhi", "destination": "Kolkata"}, "a1"),
+            _call("search_hotels", {"city": "Kolkata"}, "a2"),
+        ]),
+    ])
+    model = FailingFinalModel(messages=script, final_plan=final_plan)
+    result = run_agent("3 days in Kolkata from Delhi", llm=model)
+    assert result.plan.destination == "Kolkata"
+    assert [s.tool for s in result.steps] == ["search_flights", "search_hotels"]
+
+
+def test_agent_error_is_friendly_when_nothing_gathered(monkeypatch):
+    monkeypatch.setattr("travel_agent.agent.ModelRetryMiddleware.__init__",
+                        _no_wait_retry_init, raising=True)
+    model = FailingFinalModel(messages=iter([]), fail_always=True)
+    try:
+        run_agent("3 days in Goa", llm=model)
+    except AgentError as exc:
+        assert "malformed answer" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected AgentError")
+
+
+_ORIGINAL_RETRY_INIT = __import__("langchain.agents.middleware", fromlist=["x"]).ModelRetryMiddleware.__init__
+
+
+def _no_wait_retry_init(self, **kwargs):
+    kwargs.update(initial_delay=0.0, backoff_factor=0.0, jitter=False)
+    _ORIGINAL_RETRY_INIT(self, **kwargs)
